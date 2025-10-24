@@ -60,9 +60,9 @@ export function InteractionPanel({
           variant="ghost"
           onClick={handleLike}
           className={cn(
-            "w-12 h-12 rounded-full bg-black/40 backdrop-blur-md hover:bg-black/60 text-white border-0 transition-transform",
-            animateLike && "scale-125",
-            isLiked && "bg-primary/60 hover:bg-primary/80"
+            "w-12 h-12 rounded-full glass-dark hover:bg-black/60 text-white border-0 transition-transform ripple-button hover-lift",
+            animateLike && "animate-scaleBounce",
+            isLiked && "bg-primary/60 hover:bg-primary/80 animate-glow-pulse"
           )}
           data-testid={`button-like-${video.id}`}
         >
@@ -79,7 +79,7 @@ export function InteractionPanel({
           size="icon"
           variant="ghost"
           onClick={onComment}
-          className="w-12 h-12 rounded-full bg-black/40 backdrop-blur-md hover:bg-black/60 text-white border-0"
+          className="w-12 h-12 rounded-full glass-dark hover:bg-black/60 text-white border-0 ripple-button hover-lift"
           data-testid={`button-comment-${video.id}`}
         >
           <MessageCircle className="w-6 h-6" />
@@ -96,9 +96,9 @@ export function InteractionPanel({
           variant="ghost"
           onClick={handleBookmark}
           className={cn(
-            "w-12 h-12 rounded-full bg-black/40 backdrop-blur-md hover:bg-black/60 text-white border-0 transition-transform",
-            animateBookmark && "scale-125",
-            isBookmarked && "bg-secondary/60 hover:bg-secondary/80"
+            "w-12 h-12 rounded-full glass-dark hover:bg-black/60 text-white border-0 transition-transform ripple-button hover-lift",
+            animateBookmark && "animate-scaleBounce",
+            isBookmarked && "bg-secondary/60 hover:bg-secondary/80 animate-glow-pulse"
           )}
           data-testid={`button-bookmark-${video.id}`}
         >
@@ -115,7 +115,7 @@ export function InteractionPanel({
           size="icon"
           variant="ghost"
           onClick={onShare}
-          className="w-12 h-12 rounded-full bg-black/40 backdrop-blur-md hover:bg-black/60 text-white border-0"
+          className="w-12 h-12 rounded-full glass-dark hover:bg-black/60 text-white border-0 ripple-button hover-lift shine"
           data-testid={`button-share-${video.id}`}
         >
           <Share2 className="w-6 h-6" />

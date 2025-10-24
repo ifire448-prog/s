@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute } from "wouter";
-import { type Video } from "@shared/schema";
+import { type Video, type Comment } from "@shared/schema";
 import { VideoPlayer } from "@/components/video-player";
 import { InteractionPanel } from "@/components/interaction-panel";
 import { CommentModal } from "@/components/comment-modal";
@@ -93,7 +93,7 @@ export default function VideoDetail() {
   });
 
   // Fetch comments
-  const { data: comments = [] } = useQuery({
+  const { data: comments = [] } = useQuery<Comment[]>({
     queryKey: ["/api/comments", videoId],
     enabled: !!videoId && showComments,
   });

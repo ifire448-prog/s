@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { type Video } from "@shared/schema";
+import { type Video, type Comment } from "@shared/schema";
 import { VideoPlayer } from "@/components/video-player";
 import { InteractionPanel } from "@/components/interaction-panel";
 import { CommentModal } from "@/components/comment-modal";
 import { ShareModal } from "@/components/share-modal";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { Loader2 } from "lucide-react";
+import { VideoCardSkeleton } from "@/components/skeleton-loader";
 import { motion } from "framer-motion";
+import { useMultipleRedditVideos, type RedditVideo } from "@/hooks/use-reddit-videos";
 
 export default function ForYou() {
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
@@ -16,11 +17,284 @@ export default function ForYou() {
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [userIp, setUserIp] = useState<string>("");
+  const [allVideos, setAllVideos] = useState<Video[]>([]);
+  const [page, setPage] = useState(0);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const hasLoadedInitial = useRef(false);
+  const seenVideoIds = useRef(new Set<string>()); // Track seen videos to prevent duplicates
+  const sortMethods = useRef(['hot', 'top', 'rising', 'new']); // Different sort methods
+  const currentSortIndex = useRef(0);
+  const seenPostIds = useRef(new Set<string>());
+  const seenMediaKeys = useRef(new Set<string>());
+  // Subreddit pagination state (per-sub after cursors)
+  const subredditsPoolRef = useRef([
+    // NSFW video-focused subreddits (working, non-quarantined)
+    "NSFW_GIF", "porn_gifs", "nsfw", "RealGirls", "adorableporn",
+    "LegalTeens", "collegesluts", "ass", "boobbounce", "tiktoknsfw",
+    "TikTokNude", "nsfwhardcore"
+  ]);
+  const subredditIndexRef = useRef(0);
+  const afterCursorsRef = useRef<Record<string, string | null>>({});
+  const emptyAttemptsRef = useRef(0);
 
-  // Fetch videos
-  const { data: videos, isLoading } = useQuery<Video[]>({
+  // Proxy helper to avoid CORS/range issues on remote hosts
+  const proxify = (u: string) => (u?.startsWith('/uploads') ? u : `/api/proxy?url=${encodeURIComponent(u)}`);
+  const normalizeMediaKey = (u: string) => {
+    try {
+      let raw = u || "";
+      if (raw.startsWith('/api/proxy?')) {
+        const qs = raw.split('?')[1] || '';
+        const sp = new URLSearchParams(qs);
+        raw = sp.get('url') || raw;
+      }
+      const p = new URL(raw);
+      const host = p.hostname.toLowerCase();
+      let path = p.pathname.toLowerCase();
+      if (host.endsWith('v.redd.it')) {
+        const seg = path.split('/').filter(Boolean)[0] || '';
+        path = `/${seg}`;
+      }
+      return `${host}${path}`;
+    } catch {
+      return u || '';
+    }
+  };
+
+  // Fetch local videos (one-time)
+  const { data: localVideos, isLoading: isLoadingLocal } = useQuery<Video[]>({
     queryKey: ["/api/videos"],
   });
+
+  // Randomize initial NSFW subreddits for the first load
+  const initialNsfwSubs = useMemo(() => {
+    const pool = [
+      "NSFW_GIF", "porn_gifs", "nsfw", "RealGirls", "adorableporn",
+      "LegalTeens", "tiktoknsfw", "nsfwhardcore"
+    ];
+    return pool.sort(() => Math.random() - 0.5).slice(0, 5);
+  }, []);
+
+  // Fetch Reddit videos from randomized subreddits for initial batch
+  const { data: redditVideos, isLoading: isLoadingReddit, error: redditError } = useMultipleRedditVideos(
+    initialNsfwSubs,
+    15 // More videos per subreddit
+  );
+
+  // Show error toast if Reddit fails
+  useEffect(() => {
+    if (redditError) {
+      console.error("Reddit fetch error:", redditError);
+      // Continue with local videos only - no need to block user
+    }
+  }, [redditError]);
+
+  // Initialize feed with local + first batch of Reddit videos
+  useEffect(() => {
+    if (!hasLoadedInitial.current && localVideos && redditVideos) {
+      const merged: Video[] = [];
+      
+      // Add local videos
+      merged.push(...localVideos);
+      
+      // Mark local videos as seen
+      localVideos.forEach(v => seenVideoIds.current.add(v.id));
+      
+      // Add Reddit videos and mark as seen
+      const redditMapped: Video[] = redditVideos
+        .filter(rv => {
+          const mk = normalizeMediaKey(rv.url);
+          if (seenPostIds.current.has(rv.id) || seenMediaKeys.current.has(mk)) {
+            return false;
+          }
+          seenPostIds.current.add(rv.id);
+          seenMediaKeys.current.add(mk);
+          return true;
+        })
+        .map(rv => ({
+          id: `reddit-${rv.id}`,
+          videoUrl: proxify(rv.url),
+          thumbnailUrl: rv.thumbnail || null,
+          title: rv.title || null,
+          description: rv.title || null,
+          username: rv.author,
+          uploaderIp: "reddit",
+          likesCount: rv.score,
+          commentsCount: 0,
+          bookmarksCount: 0,
+          sharesCount: 0,
+          viewsCount: 0,
+          source: 'reddit',
+          createdAt: new Date(rv.created * 1000),
+        }));
+      merged.push(...redditMapped);
+      
+      // Shuffle for variety
+      setAllVideos(merged.sort(() => Math.random() - 0.5));
+      console.log(`✅ Initial load: ${merged.length} videos (${seenVideoIds.current.size} unique IDs tracked)`);
+      hasLoadedInitial.current = true;
+    }
+  }, [localVideos, redditVideos]);
+
+  // Load more Reddit videos when needed with per-subreddit pagination and deduplication
+  const loadMoreVideos = async () => {
+    if (isLoadingMore) return;
+    
+    setIsLoadingMore(true);
+    const loadStartTime = performance.now();
+    
+    try {
+      // Rotate through different sort methods for variety
+      const sortMethod = sortMethods.current[currentSortIndex.current % sortMethods.current.length];
+      currentSortIndex.current++;
+
+      // Select one subreddit per request and use its pagination cursor
+      const pool = subredditsPoolRef.current;
+      const sub = pool[Math.floor(Math.random() * pool.length)]; // random subreddit each load
+      const after = afterCursorsRef.current[sub] || undefined;
+
+      console.log(`🔄 Loading subreddit=${sub}, sort=${sortMethod}, after=${after ?? 'none'}`);
+
+      const response = await fetch(
+        `/api/reddit/videos?subreddit=${encodeURIComponent(sub)}&limit=20&sort=${encodeURIComponent(sortMethod)}${after ? `&after=${encodeURIComponent(after)}` : ''}`,
+        {
+          // Match server timeout (20s) to avoid premature aborts
+          signal: AbortSignal.timeout(20000),
+        }
+      );
+
+      if (!response.ok) {
+        if (response.status === 429) {
+          console.warn("⚠️ Reddit rate limit - using cached or fallback content");
+        }
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const nextAfter = response.headers.get('X-Reddit-After');
+      if (nextAfter !== null) {
+        afterCursorsRef.current[sub] = nextAfter || null;
+      }
+
+      const newRedditVideos: RedditVideo[] = await response.json();
+      
+      if (newRedditVideos && newRedditVideos.length > 0) {
+        // Filter out videos we've already seen
+        const uniqueVideos = newRedditVideos.filter(rv => {
+          const mk = normalizeMediaKey(rv.url);
+          if (seenPostIds.current.has(rv.id) || seenMediaKeys.current.has(mk)) {
+            return false;
+          }
+          seenPostIds.current.add(rv.id);
+          seenMediaKeys.current.add(mk);
+          return true;
+        });
+        // Shuffle order to randomize UI presentation
+        const shuffled = uniqueVideos.sort(() => Math.random() - 0.5);
+
+        console.log(`✅ Got ${shuffled.length} unique videos (filtered ${newRedditVideos.length - uniqueVideos.length} duplicates)`);
+        
+        if (shuffled.length > 0) {
+          const newMapped: Video[] = shuffled.map(rv => ({
+            id: `reddit-${rv.id}`,
+            videoUrl: proxify(rv.url),
+            thumbnailUrl: rv.thumbnail || null,
+            title: rv.title || null,
+            description: rv.title || null,
+            username: rv.author,
+            uploaderIp: "reddit",
+            likesCount: rv.score,
+            commentsCount: 0,
+            bookmarksCount: 0,
+            sharesCount: 0,
+            viewsCount: 0,
+            source: 'reddit',
+            createdAt: new Date(rv.created * 1000),
+          }));
+          
+          setAllVideos(prev => [...prev, ...newMapped]);
+          setPage(p => p + 1);
+          emptyAttemptsRef.current = 0;
+          
+          const loadEndTime = performance.now();
+          console.log(`⚡ Load complete in ${Math.round(loadEndTime - loadStartTime)}ms`);
+        } else if (newRedditVideos.length > 0) {
+          // All were duplicates; try next subreddit quickly
+          console.log("⚠️ All videos were duplicates, rotating subreddit...");
+          emptyAttemptsRef.current++;
+          setTimeout(() => loadMoreVideos(), 400);
+        }
+      } else {
+        // No items returned for this subreddit page
+        emptyAttemptsRef.current++;
+        console.log(`ℹ️ No items for ${sub} (after=${after ?? 'none'}). Attempts=${emptyAttemptsRef.current}`);
+        if (emptyAttemptsRef.current >= 5) {
+          // Fallback: fetch some RedGIFs to keep feed fresh (after 5 empty attempts)
+          try {
+            console.log('📡 Attempting RedGIFs NSFW fallback...');
+            const rg = await fetch(`/api/redgifs/tags?tags=amateur,blowjob,ass,boobs&limit=24`, { signal: AbortSignal.timeout(10000) });
+            if (rg.ok) {
+              const rgItems: any[] = await rg.json();
+              const mapped: Video[] = rgItems
+                .filter(item => {
+                  if (!item || !item.url || !item.id) return false;
+                  const mk = normalizeMediaKey(item.url);
+                  if (seenMediaKeys.current.has(mk) || seenVideoIds.current.has(`redgifs-${item.id}`)) return false;
+                  seenMediaKeys.current.add(mk);
+                  seenVideoIds.current.add(`redgifs-${item.id}`);
+                  return true;
+                })
+                .map(item => {
+                  return {
+                    id: `redgifs-${item.id}`,
+                    videoUrl: proxify(item.url),
+                    thumbnailUrl: item.thumbnailUrl ?? null,
+                    title: item.title ?? null,
+                    description: item.tags?.join(', ') ?? null,
+                    username: item.userName ?? 'redgifs_user',
+                    uploaderIp: 'redgifs',
+                    likesCount: item.likes ?? 0,
+                    commentsCount: 0,
+                    bookmarksCount: 0,
+                    sharesCount: 0,
+                    viewsCount: item.views ?? 0,
+                    source: 'redgifs',
+                    createdAt: new Date(item.createdAt ?? Date.now()),
+                  } as Video;
+                });
+              if (mapped.length > 0) {
+                console.log(`🧩 Added ${mapped.length} RedGIFs items as fallback`);
+                setAllVideos(prev => [...prev, ...mapped]);
+                emptyAttemptsRef.current = 0;
+              } else {
+                console.log('⚠️ RedGIFs returned no valid items');
+              }
+            } else {
+              console.warn(`⚠️ RedGIFs API error: ${rg.status}`);
+            }
+          } catch (err: any) {
+            console.warn('⚠️ RedGIFs fallback failed:', err.message);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Failed to load more videos:", error);
+      const loadEndTime = performance.now();
+      console.log(`❌ Load failed after ${Math.round(loadEndTime - loadStartTime)}ms`);
+      // Don't break the app - user can continue with existing videos
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
+  // Aggressive prefetch - load before user needs them
+  useEffect(() => {
+    // Prefetch when 10 videos remaining (was 5)
+    if (allVideos.length > 0 && currentVideoIndex >= allVideos.length - 10 && !isLoadingMore) {
+      loadMoreVideos();
+    }
+  }, [currentVideoIndex, allVideos.length, isLoadingMore]);
+
+  const videos = allVideos;
+  const isLoading = isLoadingLocal || isLoadingReddit;
 
   // Fetch user IP
   useEffect(() => {
@@ -125,7 +399,7 @@ export default function ForYou() {
   });
 
   // Fetch comments for selected video
-  const { data: comments = [] } = useQuery({
+  const { data: comments = [] } = useQuery<Comment[]>({
     queryKey: ["/api/comments", selectedVideoId],
     enabled: !!selectedVideoId && showComments,
   });
@@ -147,11 +421,7 @@ export default function ForYou() {
   });
 
   if (isLoading) {
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-background">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    );
+    return <VideoCardSkeleton />;
   }
 
   if (!videos || videos.length === 0) {
@@ -198,22 +468,26 @@ export default function ForYou() {
         }}
       />
 
-      {/* Progress indicator */}
-      {videos.length > 1 && (
-        <div className="fixed right-4 top-1/2 -translate-y-1/2 flex flex-col gap-2 z-10">
-          {videos.map((_, index) => (
-            <div
-              key={index}
-              className={`w-1 h-8 rounded-full transition-all ${
-                index === currentVideoIndex
-                  ? "bg-gradient-to-b from-primary to-secondary"
-                  : "bg-white/30"
-              }`}
-              data-testid={`progress-indicator-${index}`}
-            />
-          ))}
-        </div>
+      {/* Loading more indicator */}
+      {isLoadingMore && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="fixed bottom-24 left-1/2 -translate-x-1/2 z-20 bg-black/80 backdrop-blur-md px-6 py-3 rounded-full border border-white/20"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+            <span className="text-white text-sm font-medium">Loading more videos...</span>
+          </div>
+        </motion.div>
       )}
+
+      {/* Video counter */}
+      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-10 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full">
+        <span className="text-white text-xs font-medium">
+          {currentVideoIndex + 1} / {videos.length === 0 ? "∞" : videos.length}
+        </span>
+      </div>
 
       {/* Comment Modal */}
       <CommentModal

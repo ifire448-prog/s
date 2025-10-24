@@ -9,6 +9,8 @@ import {
   type InsertBookmark,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
+import fs from "fs";
+import path from "path";
 
 export interface IStorage {
   // Videos
@@ -40,15 +42,50 @@ export class MemStorage implements IStorage {
   private likes: Map<string, Like>;
   private comments: Map<string, Comment>;
   private bookmarks: Map<string, Bookmark>;
+  private dataDir: string;
+  private videosFile: string;
 
   constructor() {
     this.videos = new Map();
     this.likes = new Map();
     this.comments = new Map();
     this.bookmarks = new Map();
+    this.dataDir = path.join(process.cwd(), "server", "data");
+    this.videosFile = path.join(this.dataDir, "videos.json");
 
-    // Seed with mock Reddit videos
-    this.seedMockVideos();
+    this.ensureDataDir();
+    this.loadFromDisk();
+    if (this.videos.size === 0) {
+      this.seedMockVideos();
+      this.saveToDisk();
+    }
+  }
+
+  private ensureDataDir() {
+    if (!fs.existsSync(this.dataDir)) {
+      fs.mkdirSync(this.dataDir, { recursive: true });
+    }
+  }
+
+  private loadFromDisk() {
+    try {
+      if (fs.existsSync(this.videosFile)) {
+        const raw = fs.readFileSync(this.videosFile, "utf-8");
+        const arr: Video[] = JSON.parse(raw).map((v: any) => ({
+          ...v,
+          createdAt: v.createdAt ? new Date(v.createdAt) : new Date(),
+        }));
+        this.videos.clear();
+        arr.forEach((v) => this.videos.set(v.id, v));
+      }
+    } catch {}
+  }
+
+  private saveToDisk() {
+    try {
+      const arr = Array.from(this.videos.values());
+      fs.writeFileSync(this.videosFile, JSON.stringify(arr));
+    } catch {}
   }
 
   private seedMockVideos() {
@@ -122,16 +159,23 @@ export class MemStorage implements IStorage {
   async createVideo(insertVideo: InsertVideo): Promise<Video> {
     const id = randomUUID();
     const video: Video = {
-      ...insertVideo,
       id,
+      videoUrl: insertVideo.videoUrl,
+      thumbnailUrl: insertVideo.thumbnailUrl ?? null,
+      title: insertVideo.title ?? null,
+      description: insertVideo.description ?? null,
+      username: insertVideo.username ?? "anonymous",
+      uploaderIp: insertVideo.uploaderIp ?? "unknown",
       likesCount: 0,
       commentsCount: 0,
       bookmarksCount: 0,
       sharesCount: 0,
       viewsCount: 0,
+      source: (insertVideo as any).source ?? "local",
       createdAt: new Date(),
     };
     this.videos.set(id, video);
+    this.saveToDisk();
     return video;
   }
 
@@ -150,6 +194,7 @@ export class MemStorage implements IStorage {
     if (video) {
       video.sharesCount++;
       this.videos.set(videoId, video);
+      this.saveToDisk();
     }
   }
 
@@ -185,6 +230,7 @@ export class MemStorage implements IStorage {
       if (video && video.likesCount > 0) {
         video.likesCount--;
         this.videos.set(videoId, video);
+        this.saveToDisk();
       }
     }
   }
@@ -207,6 +253,8 @@ export class MemStorage implements IStorage {
     const comment: Comment = {
       ...insertComment,
       id,
+      // Ensure username is non-empty string
+      username: (insertComment as any).username ?? "anonymous",
       createdAt: new Date(),
     };
     this.comments.set(id, comment);
@@ -216,6 +264,7 @@ export class MemStorage implements IStorage {
     if (video) {
       video.commentsCount++;
       this.videos.set(insertComment.videoId, video);
+      this.saveToDisk();
     }
 
     return comment;
@@ -242,6 +291,7 @@ export class MemStorage implements IStorage {
     if (video) {
       video.bookmarksCount++;
       this.videos.set(insertBookmark.videoId, video);
+      this.saveToDisk();
     }
 
     return bookmark;
@@ -259,6 +309,7 @@ export class MemStorage implements IStorage {
       if (video && video.bookmarksCount > 0) {
         video.bookmarksCount--;
         this.videos.set(videoId, video);
+        this.saveToDisk();
       }
     }
   }

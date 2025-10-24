@@ -15,7 +15,10 @@ export function VideoPlayer({ video, isActive, onVideoClick }: VideoPlayerProps)
   const [isMuted, setIsMuted] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
   const [showControls, setShowControls] = useState(false);
+  const [hasError, setHasError] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
+  // Autoplay when video becomes active
   useEffect(() => {
     if (!videoRef.current) return;
 
@@ -27,6 +30,59 @@ export function VideoPlayer({ video, isActive, onVideoClick }: VideoPlayerProps)
       setIsPlaying(false);
     }
   }, [isActive]);
+
+  // Force autoplay on mount for immediate playback
+  useEffect(() => {
+    setHasError(false);
+    setIsLoading(true);
+    
+    if (videoRef.current && isActive) {
+      const playPromise = videoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            setIsPlaying(true);
+            setIsLoading(false);
+          })
+          .catch((err) => {
+            // Autoplay blocked, user needs to interact first
+            console.log("Autoplay blocked for video:", video.id, err.message);
+            setIsLoading(false);
+          });
+      }
+    }
+  }, [video.id, isActive]);
+
+  // Handle video loading and errors
+  useEffect(() => {
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+
+    const handleCanPlay = () => {
+      setIsLoading(false);
+      setHasError(false);
+    };
+
+    const handleError = (e: Event) => {
+      console.error('Video error for:', video.videoUrl, e);
+      setHasError(true);
+      setIsLoading(false);
+    };
+
+    const handleLoadStart = () => {
+      setIsLoading(true);
+    };
+
+    videoEl.addEventListener('canplay', handleCanPlay);
+    videoEl.addEventListener('error', handleError);
+    videoEl.addEventListener('loadstart', handleLoadStart);
+
+    return () => {
+      videoEl.removeEventListener('canplay', handleCanPlay);
+      videoEl.removeEventListener('error', handleError);
+      videoEl.removeEventListener('loadstart', handleLoadStart);
+    };
+  }, [video.videoUrl]);
 
   const toggleMute = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -66,12 +122,35 @@ export function VideoPlayer({ video, isActive, onVideoClick }: VideoPlayerProps)
       <video
         ref={videoRef}
         src={video.videoUrl}
-        className="w-full h-full object-cover"
+        className="w-full h-full object-cover gpu-accelerated"
+        autoPlay
         loop
         muted={isMuted}
         playsInline
+        preload="auto"
+        poster={video.thumbnailUrl || undefined}
+        crossOrigin="anonymous"
         data-testid={`video-element-${video.id}`}
       />
+
+      {/* Loading indicator */}
+      {isLoading && !hasError && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+          <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
+
+      {/* Error state */}
+      {hasError && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-white p-6">
+          <div className="text-4xl mb-4">⚠️</div>
+          <p className="text-lg font-semibold mb-2">Video unavailable</p>
+          <p className="text-sm text-white/60 text-center max-w-md">
+            This video cannot be played. It may be restricted or removed.
+          </p>
+          <p className="text-xs text-white/40 mt-4">Scroll for next video</p>
+        </div>
+      )}
 
       {/* Gradient overlay at bottom for text readability */}
       <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-black/80 via-black/40 to-transparent pointer-events-none" />

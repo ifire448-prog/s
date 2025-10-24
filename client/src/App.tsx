@@ -5,6 +5,8 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
+import { MobileNav } from "@/components/mobile-nav";
+import { FancyParticles, AnimatedBackground } from "@/components/fancy-particles";
 import ForYou from "@/pages/for-you";
 import Explore from "@/pages/explore";
 import Upload from "@/pages/upload";
@@ -35,11 +37,14 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <SidebarProvider style={style as React.CSSProperties} defaultOpen={true}>
-          <div className="flex h-screen w-full bg-background">
+          <AnimatedBackground />
+          <FancyParticles count={20} />
+          <div className="flex h-screen w-full bg-background relative">
             <AppSidebar />
-            <main className="flex-1 overflow-hidden">
+            <main className="flex-1 overflow-hidden pb-16 md:pb-0">
               <Router />
             </main>
+            <MobileNav />
           </div>
         </SidebarProvider>
         <Toaster />
